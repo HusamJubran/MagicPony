@@ -304,7 +304,7 @@ class MagicPony:
     
     def forward(self, batch, epoch, logger=None, total_iter=None, save_results=False, save_dir=None, logger_prefix='', is_training=True):
         input_image, mask_gt, mask_dt, mask_valid, flow_gt, bbox, bg_image, dino_feat_im, dino_cluster_im, seq_idx, frame_idx = (*map(lambda x: validate_tensor_to_device(x, self.device), batch),)
-        global_frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness = bbox.unbind(2)  # BxFx8
+        global_frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness, global_traj_id = bbox.unbind(2)  # BxFx9
         mask_gt = (mask_gt[:, :, 0, :, :] > 0.9).float()  # BxFxHxW
         mask_dt = mask_dt / self.in_image_size
         batch_size, num_frames, _, _, _ = input_image.shape  # BxFxCxHxW
@@ -515,7 +515,7 @@ class MagicPony:
 
         if save_results:
             b0 = self.cfgs.get('num_to_save_from_each_batch', batch_size*num_frames)
-            fnames = [f'{total_iter:07d}_{fid:10d}' for fid in collapseBF(global_frame_id.int())][:b0]
+            fnames = [f'{tid:07d}/{total_iter:07d}_{fid:10d}' for fid, tid in zip(collapseBF(global_frame_id.int()), collapseBF(global_traj_id.int()))][:b0]
             def save_image(name, image):
                 misc.save_images(save_dir, collapseBF(image)[:b0].clamp(0,1).detach().cpu().numpy(), suffix=name, fnames=fnames)
 

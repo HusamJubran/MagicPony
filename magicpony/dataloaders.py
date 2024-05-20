@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 import torchvision.datasets.folder
 import torchvision.transforms as transforms
 from einops import rearrange
+import json
 
 
 def compute_distance_transform(mask):
@@ -36,6 +37,35 @@ def box_loader(fpath):
     box[0] = box[0].split('_')[0]
     return box.astype(np.float32)
 
+def metadata_loader(fpath):
+
+    with open(fpath, 'r') as file:
+        metadata = json.load(file)    
+
+    # Get the directory of the file
+    directory = os.path.dirname(fpath)
+
+    # Get the parent directory name
+    global_traj_id = os.path.basename(directory)
+
+    global_frame_id = metadata['f_index']
+    crop_x0 = metadata['xmin']
+    crop_y0 = metadata['ymin']
+    crop_w = metadata['w']
+    crop_h = metadata['h'] 
+    full_w = metadata['full_w']
+    full_h = metadata['full_h']
+    sharpness = metadata['sharpness']
+
+    # Creating a list of these values
+    values = [global_frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness, global_traj_id]
+
+    # Converting the list to a NumPy array of type float32
+    array = np.array(values, dtype=np.float32)
+
+    # The 'array' now contains the values in float32 format
+    
+    return array
 
 def read_feat_from_img(path, n_channels):
     feat = np.array(Image.open(path))
@@ -133,7 +163,8 @@ class NFrameSequenceDataset(BaseSequenceDataset):
     def __init__(self, root, num_frames=2, skip_beginning=4, skip_end=4, min_seq_len=10, in_image_size=256, out_image_size=256, random_sample=False, dense_sample=True, shuffle=False, load_flow=False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64):
         self.image_loader = ["rgb.*", torchvision.datasets.folder.default_loader]
         self.mask_loader = ["mask.png", torchvision.datasets.folder.default_loader]
-        self.bbox_loader = ["box.txt", box_loader]
+        # self.bbox_loader = ["box.txt", box_loader]
+        self.bbox_loader = ["metadata.json", metadata_loader]
         super().__init__(root, skip_beginning, skip_end, min_seq_len)
         if load_flow and num_frames > 1:
             self.flow_loader = ["flow.png", cv2.imread, cv2.IMREAD_UNCHANGED]
@@ -164,7 +195,8 @@ class NFrameSequenceDataset(BaseSequenceDataset):
             self.flow_transform = flow_transform
         self.load_dino_feature = load_dino_feature
         if load_dino_feature:
-            self.dino_feature_loader = [f"feat{dino_feature_dim}.png", dino_loader, dino_feature_dim]
+            # self.dino_feature_loader = [f"feat{dino_feature_dim}.png", dino_loader, dino_feature_dim]
+            self.dino_feature_loader = ["feat.png", dino_loader, dino_feature_dim]
         self.load_dino_cluster = load_dino_cluster
         if load_dino_cluster:
             self.dino_cluster_loader = ["clusters.png", torchvision.datasets.folder.default_loader]

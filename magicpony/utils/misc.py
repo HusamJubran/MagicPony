@@ -146,8 +146,11 @@ def save_images(out_fold, imgs, prefix='', suffix='', fnames=None, ext='.png'):
             fname = '%07d' % idx
         else:
             fname = fnames[i]
-        fpath = os.path.join(out_fold_i, prefix+fname+suffix+ext)
+            
 
+        fpath = os.path.join(out_fold_i, prefix+fname+suffix+ext)
+        directory_path = os.path.dirname(fpath)
+        os.makedirs(directory_path, exist_ok=True)
         cv2.imwrite(fpath, im_out)
 
 
@@ -180,7 +183,7 @@ def save_obj(out_fold, meshes=None, save_material=True, feat=None, prefix='', su
     for i in range(batch_size):
         out_fold_i = out_fold[i] if isinstance(out_fold, list) else out_fold
         xmkdir(out_fold_i)
-
+        print("out_fold_i: ", out_fold_i)
         if fnames is None:
             idx = len(glob.glob(os.path.join(out_fold_i, prefix+'*'+suffix+".obj"))) + 1
             fname = '%07d' % idx

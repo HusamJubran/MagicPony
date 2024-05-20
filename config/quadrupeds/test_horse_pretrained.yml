@@ -7,8 +7,8 @@ checkpoint_name: pretrained_horse.pth
 archive_code: false
 use_logger: false
 
-test_data_dir: data/horse_combined/test
-test_result_dir: results/quadrupeds/pretrained_horse/test_results_combined_pretrained
+test_data_dir: /viscam/projects/video_animals/husam/preprocessing/data/Final/test
+test_result_dir: results/quadrupeds/pretrained_horse/Final
 
 ## dataloader
 data_type: sequence  # sequence, image
