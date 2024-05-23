@@ -21,6 +21,7 @@ class Trainer:
         self.keep_num_checkpoint = cfgs.get('keep_num_checkpoint', 2)  # -1 for keeping all checkpoints
         self.archive_code = cfgs.get('archive_code', True)
         self.resume = cfgs.get('resume', True)
+        self.load_optim = cfgs.get('load_optim', True)
         self.checkpoint_name = cfgs.get('checkpoint_name', None)
         self.test_result_dir = cfgs.get('test_result_dir', None)
 
@@ -126,7 +127,7 @@ class Trainer:
 
         # resume from checkpoint
         if self.resume:
-            start_epoch, self.total_iter = self.load_checkpoint(load_optim=True)
+            start_epoch, self.total_iter = self.load_checkpoint(load_optim=self.load_optim)
 
         # initialize tensorboard logger
         if self.use_logger:

@@ -41,7 +41,6 @@ def metadata_loader(fpath):
 
     with open(fpath, 'r') as file:
         metadata = json.load(file)    
-
     # Get the directory of the file
     directory = os.path.dirname(fpath)
 
@@ -101,7 +100,7 @@ def get_valid_mask(boxs, image_size):
 
 
 def horizontal_flip_box(box):
-    frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness = box.unbind(1)
+    frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness, _ = box.unbind(1)
     box[:,1] = full_w - crop_x0 - crop_w  # x0
     return box
 

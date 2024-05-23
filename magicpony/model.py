@@ -173,9 +173,57 @@ class MagicPony:
         self.netPrior.to(device)
         self.netInstance.to(device)
 
+
+    def set_training_modes(self, train_mode_paths):
+        # Helper function to check if a submodule path is in the train_mode list
+        def is_in_train_mode(path):
+            for train_path in train_mode_paths:
+                if train_path.startswith(path):
+                    return True
+            return False
+
+        # Recursive function to set training/eval modes for PyTorch modules
+        def set_modes(module, path=''):
+            # Check if the current module path is in train_mode
+            if is_in_train_mode(path):
+                module.train()
+            else:
+                module.eval()
+
+            # Iterate over all submodules
+            for name, submodule in module.named_children():
+                sub_path = f"{path}.{name}" if path else name
+                
+                if is_in_train_mode(sub_path):
+                    print(sub_path)
+                    submodule.train()
+                else:
+                    submodule.eval()
+
+                # Recursive call for nested submodules
+                set_modes(submodule, sub_path)
+        print("Training the following modules:")
+        # Iterate over MagicPony's attributes and apply training/eval modes if they are PyTorch modules
+        for name, submodule in self.__dict__.items():
+            if isinstance(submodule, nn.Module):
+                sub_path = name
+                if is_in_train_mode(sub_path):
+                    print(sub_path)
+                    submodule.train()
+                else:
+                    submodule.eval()
+
+                # Apply modes recursively to submodules
+                set_modes(submodule, sub_path)
+
+
     def set_train(self):
-        self.netPrior.train()
-        self.netInstance.train()
+        train_mode_modules = self.cfgs.get('train_mode_modules', None)
+        if train_mode_modules is None:
+            self.netPrior.train()
+            self.netInstance.train()
+        else:
+            self.set_training_modes(train_mode_modules)
 
     def set_eval(self):
         self.netPrior.eval()
