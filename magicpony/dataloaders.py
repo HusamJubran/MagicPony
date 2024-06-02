@@ -110,12 +110,13 @@ def none_to_nan(x):
 
 
 class BaseSequenceDataset(Dataset):
-    def __init__(self, root, skip_beginning=4, skip_end=4, min_seq_len=10):
+    def __init__(self, root, skip_beginning=4, skip_end=4, min_seq_len=10, skip_specific = None):
         super().__init__()
 
         self.skip_beginning = skip_beginning
         self.skip_end = skip_end
         self.min_seq_len = min_seq_len
+        self.skip_specific = skip_specific
         self.sequences = self._make_sequences(root)
         self.samples = []
 
@@ -127,6 +128,32 @@ class BaseSequenceDataset(Dataset):
                 if len(files) >= self.min_seq_len:
                     result.append(files)
         return result
+    
+    # Function to check if a file number should be skipped
+    def _should_skip(self, file_number, skip_ranges):
+        for start, end in skip_ranges:
+            if start <= file_number <= end:
+                return True
+        return False
+
+
+
+    def _skip_specific_trajs(self, result, skip_specific):
+        if skip_specific is None:
+            return result
+        # List to store the final results
+        final_result = []
+        # Iterate through the result list
+        for path in result:
+            # Extract the file number using regex
+            match = re.search(r'/(\d{7})/\d{7}_\{\}', path)
+            if match:
+                file_number = match.group(1)
+                # Check if the file number should be skipped
+                if not self._should_skip(file_number, skip_specific):
+                    final_result.append(path)
+        
+        return final_result
 
     def _parse_folder(self, path):
         image_path_suffix = self.image_loader[0]
@@ -135,7 +162,7 @@ class BaseSequenceDataset(Dataset):
             image_path_suffix = re.findall(image_path_suffix, result[0])[0]
             self.image_loader[0] = image_path_suffix
         result = [p.replace(image_path_suffix, '{}') for p in result]
-
+        result = self._skip_specific_trajs(result=result, skip_specific=self.skip_specific)
         if len(result) <= self.skip_beginning + self.skip_end:
             return []
         if self.skip_end == 0:
@@ -159,16 +186,21 @@ class BaseSequenceDataset(Dataset):
 
 
 class NFrameSequenceDataset(BaseSequenceDataset):
-    def __init__(self, root, num_frames=2, skip_beginning=4, skip_end=4, min_seq_len=10, in_image_size=256, out_image_size=256, random_sample=False, dense_sample=True, shuffle=False, load_flow=False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64):
+    def __init__(self, root, num_frames=2, skip_beginning=4, skip_end=4, min_seq_len=10, in_image_size=256, out_image_size=256, random_sample=False, dense_sample=True, shuffle=False, load_flow=False, load_depth = False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64 , skip_specific = None):
         self.image_loader = ["rgb.*", torchvision.datasets.folder.default_loader]
         self.mask_loader = ["mask.png", torchvision.datasets.folder.default_loader]
         # self.bbox_loader = ["box.txt", box_loader]
         self.bbox_loader = ["metadata.json", metadata_loader]
-        super().__init__(root, skip_beginning, skip_end, min_seq_len)
+        super().__init__(root, skip_beginning, skip_end, min_seq_len , skip_specific)
         if load_flow and num_frames > 1:
             self.flow_loader = ["flow.png", cv2.imread, cv2.IMREAD_UNCHANGED]
         else:
             self.flow_loader = None
+        
+        if load_depth:
+            self.depth_loader = ["depth_map.png", torchvision.datasets.folder.default_loader]
+        else:
+            self.depth_loader = None
 
         self.num_frames = num_frames
         self.random_sample = random_sample
@@ -200,6 +232,7 @@ class NFrameSequenceDataset(BaseSequenceDataset):
         if load_dino_cluster:
             self.dino_cluster_loader = ["clusters.png", torchvision.datasets.folder.default_loader]
         self.load_flow = load_flow
+        self.load_depth = load_depth
         self.load_background = load_background
         self.random_xflip = random_xflip
 
@@ -228,6 +261,10 @@ class NFrameSequenceDataset(BaseSequenceDataset):
             flows = torch.stack(self._load_ids(paths[:-1], self.flow_loader, transform=self.flow_transform), 0)  # load flow from current frame to next, (N-1)x(x,y)xHxW, -1~1
         else:
             flows = None
+        if self.load_depth:
+            depths = torch.stack(self._load_ids(paths, self.depth_loader, transform=self.mask_transform), 0)  # load depth maps for all images
+        else:
+            depths = None
         if self.load_background:
             bg_fpath = os.path.join(os.path.dirname(paths[0]), 'background_frame.jpg')
             assert os.path.isfile(bg_fpath)
@@ -249,7 +286,7 @@ class NFrameSequenceDataset(BaseSequenceDataset):
         ## random horizontal flip
         if self.random_xflip and np.random.rand() < 0.5:
             xflip = lambda x: None if x is None else x.flip(-1)
-            images, masks, mask_dt, mask_valid, flows, bg_images, dino_features, dino_clusters = (*map(xflip, (images, masks, mask_dt, mask_valid, flows, bg_images, dino_features, dino_clusters)),)
+            images, masks, mask_dt, mask_valid, flows, depths, bg_images, dino_features, dino_clusters = (*map(xflip, (images, masks, mask_dt, mask_valid, flows, depths, bg_images, dino_features, dino_clusters)),)
             if flows is not None:
                 flows[:,0] *= -1  # invert delta x
             bboxs = horizontal_flip_box(bboxs)  # NxK
@@ -258,16 +295,16 @@ class NFrameSequenceDataset(BaseSequenceDataset):
         if len(paths) < self.num_frames:
             num_pad = self.num_frames - len(paths)
             pad_front = lambda x: None if x is None else torch.cat([x[:1]] *num_pad + [x], 0)
-            images, masks, mask_dt, mask_valid, flows, bboxs, bg_images, dino_features, dino_clusters, frame_idx = (*map(pad_front, (images, masks, mask_dt, mask_valid, flows, bboxs, bg_images, frame_idx)),)
+            images, masks, mask_dt, mask_valid, flows, depths, bboxs, bg_images, dino_features, dino_clusters, frame_idx = (*map(pad_front, (images, masks, mask_dt, mask_valid, flows, depths, bboxs, bg_images, frame_idx)),)
             if flows is not None:
                 flows[:num_pad] = 0  # setting flow to zeros for replicated frames
 
-        out = (*map(none_to_nan, (images, masks, mask_dt, mask_valid, flows, bboxs, bg_images, dino_features, dino_clusters, seq_idx, frame_idx)),)  # for batch collation
+        out = (*map(none_to_nan, (images, masks, mask_dt, mask_valid, flows, depths, bboxs, bg_images, dino_features, dino_clusters, seq_idx, frame_idx)),)  # for batch collation
         return out
 
 
-def get_sequence_loader(data_dir, batch_size=256, num_workers=4, in_image_size=256, out_image_size=256, num_frames=2, skip_beginning=4, skip_end=4, min_seq_len=10, random_sample=False, dense_sample=True, shuffle=False, load_flow=False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64):
-    dataset = NFrameSequenceDataset(data_dir, num_frames=num_frames, skip_beginning=skip_beginning, skip_end=skip_end, min_seq_len=min_seq_len, in_image_size=in_image_size, out_image_size=out_image_size, random_sample=random_sample, dense_sample=dense_sample, shuffle=shuffle, load_flow=load_flow, load_background=load_background, random_xflip=random_xflip, load_dino_feature=load_dino_feature, load_dino_cluster=load_dino_cluster, dino_feature_dim=dino_feature_dim)
+def get_sequence_loader(data_dir, batch_size=256, num_workers=4, in_image_size=256, out_image_size=256, num_frames=2, skip_beginning=4, skip_end=4, min_seq_len=10, random_sample=False, dense_sample=True, shuffle=False, load_flow=False, load_depth = False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64 , skip_specific = None):
+    dataset = NFrameSequenceDataset(data_dir, num_frames=num_frames, skip_beginning=skip_beginning, skip_end=skip_end, min_seq_len=min_seq_len, in_image_size=in_image_size, out_image_size=out_image_size, random_sample=random_sample, dense_sample=dense_sample, shuffle=shuffle, load_flow=load_flow, load_depth = load_depth, load_background=load_background, random_xflip=random_xflip, load_dino_feature=load_dino_feature, load_dino_cluster=load_dino_cluster, dino_feature_dim=dino_feature_dim , skip_specific = skip_specific)
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,

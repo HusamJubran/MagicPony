@@ -110,7 +110,11 @@ def shade(
         buffers['dino_pred'] = dino_pred
 
     if render_modes is not None:
-        buffers = {mode: torch.cat((buffers[mode], alpha), dim=-1) for mode in render_modes}
+        buffers = {
+            mode: torch.cat((buffers[mode], alpha), dim=-1) 
+            for mode in render_modes 
+            if mode != "depth"
+        }
     else:
         buffers = {'shaded': torch.cat((shaded_col, alpha), dim=-1)}
 
@@ -194,6 +198,14 @@ def render_layer(
     buffers = shade(gb_pos, gb_geometric_normal, gb_normal, gb_tangent, gb_tex_pos, w2c, view_pos, lgt, material, bsdf, feat=feat, render_modes=render_modes, two_sided_shading=two_sided_shading, delta_xy_interp=delta_xy_interp, dino_net=dino_net)
 
     ################################################################################
+    # Depth
+    ################################################################################
+
+    if 'depth' in render_modes:
+        depth = rast_out_s[..., 2:3]
+        buffers['depth'] = depth
+
+    ################################################################################
     # Prepare output
     ################################################################################
 
@@ -241,8 +253,14 @@ def render_mesh(
     def composite_buffer(key, layers, background, antialias):
         accum = background
         for buffers, rast in reversed(layers):
-            alpha = (rast[..., -1:] > 0).float() * buffers[key][..., -1:]
-            accum = torch.lerp(accum, torch.cat((buffers[key][..., :-1], torch.ones_like(buffers[key][..., -1:])), dim=-1), alpha)
+            if key == 'depth':
+                # Depth compositing: choose the closest depth
+                current_depth = buffers['depth']
+                depth_mask = (current_depth < accum).float()
+                accum = depth_mask * current_depth + (1 - depth_mask) * accum
+            else:
+                alpha = (rast[..., -1:] > 0).float() * buffers[key][..., -1:]
+                accum = torch.lerp(accum, torch.cat((buffers[key][..., :-1], torch.ones_like(buffers[key][..., -1:])), dim=-1), alpha)
             if antialias:
                 accum = dr.antialias(accum.contiguous(), rast, v_pos_clip, mesh.t_pos_idx[0].int())
         return accum
@@ -295,7 +313,7 @@ def render_mesh(
             # Downscale to framebuffer resolution. Use avg pooling 
             out_buffer = util.avg_pool_nhwc(accum, spp) if spp > 1 else accum
 
-            if key == 'shaded':
+            if key == 'shaded' or key == 'depth':
                 pass  # RGBA channels
             elif key in ['kd', 'ks', 'normal', 'geo_normal']:
                 out_buffer = out_buffer[..., :3]

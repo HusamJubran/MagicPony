@@ -59,6 +59,7 @@ class MagicPony:
         self.sdf_reg_decay_start_iter = cfgs.get('sdf_reg_decay_start_iter', 999999)
         self.arti_reg_loss_epochs = np.arange(*cfgs.get('arti_reg_loss_epochs', [0, self.num_epochs]))
         self.render_flow = self.cfgs.get('flow_loss_weight', 0.) > 0.
+        self.render_depth = self.cfgs.get('depth_loss_weight', 0.) > 0.
         
         self.glctx = dr.RasterizeGLContext()
         self.in_image_size = cfgs.get('in_image_size', 128)
@@ -78,6 +79,7 @@ class MagicPony:
         random_sample_val_frames = cfgs.get('random_sample_val_frames', False)
         random_xflip_train = cfgs.get('random_xflip_train', False)
         load_flow = cfgs.get('load_flow', False)
+        load_depth = cfgs.get('load_depth', False)
         load_background = cfgs.get('background_mode', 'none') == 'background'
         load_dino_feature = cfgs.get('load_dino_feature', False)
         load_dino_cluster = cfgs.get('load_dino_cluster', False)
@@ -88,6 +90,7 @@ class MagicPony:
             skip_end = cfgs.get('skip_end', 4)
             num_frames = cfgs.get('num_frames', 2)
             min_seq_len = cfgs.get('min_seq_len', 10)
+            skip_specific = cfgs.get('skip_specific' ,None)
             get_loader = lambda is_train, random_sample_frames=False, **kwargs: get_sequence_loader(
                 batch_size=batch_size,
                 num_workers=num_workers,
@@ -98,6 +101,7 @@ class MagicPony:
                 num_frames=num_frames,
                 min_seq_len=min_seq_len,
                 load_flow=load_flow,
+                load_depth = load_depth,
                 load_background=load_background,
                 load_dino_feature=load_dino_feature,
                 load_dino_cluster=load_dino_cluster,
@@ -106,6 +110,7 @@ class MagicPony:
                 random_sample=random_sample_frames,
                 dense_sample=is_train,
                 shuffle=random_shuffle_train_samples if is_train else False,
+                skip_specific = skip_specific,
                 **kwargs)
         
         elif data_type == 'image':
@@ -242,6 +247,13 @@ class MagicPony:
         if self.backward_prior:
             self.optimizerPrior.zero_grad()
         self.total_loss.backward()
+        #     # Check gradients for individual losses
+        # for name, loss in self.losses.items():
+        #     if loss.grad is not None:
+        #         print(f"Loss '{name}' gradient after backward pass: {loss.grad}")
+        #     else:
+        #         print(f"Loss '{name}' gradient is None after backward pass")
+
         self.optimizerInstance.step()
         if self.backward_prior:
             self.optimizerPrior.step()
@@ -291,7 +303,7 @@ class MagicPony:
             num_frames=num_frames)
         return rendered
 
-    def compute_reconstruction_losses(self, image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt, dino_feat_im_pred, background_mode='none', reduce=False):
+    def compute_reconstruction_losses(self, image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred,  flow_gt, depth_pred, depth_gt, dino_feat_im_gt, dino_feat_im_pred, background_mode='none', reduce=False):
         losses = {}
         batch_size, num_frames, _, h, w = image_pred.shape  # BxFxCxHxW
 
@@ -329,6 +341,12 @@ class MagicPony:
             num_mask_pixels = flow_loss_mask.reshape(batch_size, num_frames-1, -1).sum(2).clamp(min=1)
             losses['flow_loss'] = (flow_loss.reshape(batch_size, num_frames-1, -1).sum(2) / num_mask_pixels)
 
+        ## depth loss
+        if depth_pred is not None:
+            depth_loss = (depth_pred - depth_gt) ** 2
+            depth_loss = depth_loss * mask_both_binary.unsqueeze(2)
+            losses['depth_loss'] = depth_loss.reshape(batch_size, num_frames, -1).mean(2)
+
         ## DINO feature loss
         if dino_feat_im_pred is not None and dino_feat_im_gt is not None:
             dino_feat_loss = (dino_feat_im_pred - dino_feat_im_gt) ** 2
@@ -351,14 +369,13 @@ class MagicPony:
         return losses, aux
     
     def forward(self, batch, epoch, logger=None, total_iter=None, save_results=False, save_dir=None, logger_prefix='', is_training=True):
-        input_image, mask_gt, mask_dt, mask_valid, flow_gt, bbox, bg_image, dino_feat_im, dino_cluster_im, seq_idx, frame_idx = (*map(lambda x: validate_tensor_to_device(x, self.device), batch),)
+        input_image, mask_gt, mask_dt, mask_valid, flow_gt, depth_gt, bbox, bg_image, dino_feat_im, dino_cluster_im, seq_idx, frame_idx = (*map(lambda x: validate_tensor_to_device(x, self.device), batch),)
         global_frame_id, crop_x0, crop_y0, crop_w, crop_h, full_w, full_h, sharpness, global_traj_id = bbox.unbind(2)  # BxFx9
         mask_gt = (mask_gt[:, :, 0, :, :] > 0.9).float()  # BxFxHxW
         mask_dt = mask_dt / self.in_image_size
         batch_size, num_frames, _, _, _ = input_image.shape  # BxFxCxHxW
         h = w = self.out_image_size
         aux_viz = {}
-
         dino_feat_im_gt = None if dino_feat_im is None else expandBF(torch.nn.functional.interpolate(collapseBF(dino_feat_im), size=[h, w], mode="bilinear"), batch_size, num_frames)[:, :, :self.dino_feature_recon_dim]
         dino_cluster_im_gt = None if dino_cluster_im is None else expandBF(torch.nn.functional.interpolate(collapseBF(dino_cluster_im), size=[h, w], mode="nearest"), batch_size, num_frames)
         
@@ -374,7 +391,6 @@ class MagicPony:
         if self.netPrior.netShape.grid_res != dmtet_grid_res:
             self.netPrior.netShape.load_tets(dmtet_grid_res)
         prior_shape, dino_net = self.netPrior(total_iter=total_iter, is_training=is_training)
-
         ## predict instance specific parameters
         shape, pose_raw, pose, mvp, w2c, campos, texture, im_features, deformation, arti_params, light, forward_aux = self.netInstance(input_image, prior_shape, epoch, total_iter, is_training=is_training)  # first two dim dimensions already collapsed N=(B*F)
         rot_logit = forward_aux['rot_logit']
@@ -387,19 +403,25 @@ class MagicPony:
         render_modes = ['shaded', 'dino_pred']
         if render_flow:
             render_modes += ['flow']
+        if self.render_depth:
+            render_modes += ['depth']
         renders = self.render(render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light, prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames)
         renders = map(lambda x: expandBF(x, batch_size, num_frames), renders)
         if render_flow:
             shaded, dino_feat_im_pred, flow_pred = renders
             flow_pred = flow_pred[:, :-1]  # Bx(F-1)x2xHxW
+            depth_pred = None
+        elif self.render_depth:
+            shaded, dino_feat_im_pred, depth_pred = renders
+            flow_pred = None
         else:
             shaded, dino_feat_im_pred = renders
+            depth_pred = None
             flow_pred = None
         image_pred = shaded[:, :, :3]
         mask_pred = shaded[:, :, 3]
-
         ## compute reconstruction losses
-        losses = self.compute_reconstruction_losses(image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt, dino_feat_im_pred, background_mode=self.background_mode, reduce=False)
+        losses = self.compute_reconstruction_losses(image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, depth_pred, depth_gt, dino_feat_im_gt, dino_feat_im_pred, background_mode=self.background_mode, reduce=False)
         
         ## supervise the rotation logits directly with reconstruction loss
         logit_loss_target = torch.zeros_like(expandBF(rot_logit, batch_size, num_frames))
@@ -431,7 +453,6 @@ class MagicPony:
         regularizers, aux = self.compute_regularizers(arti_params, deformation)
         final_losses.update(regularizers)
         aux_viz.update(aux)
-
         ## compute final losses
         total_loss = 0
         for name, loss in final_losses.items():
@@ -454,7 +475,6 @@ class MagicPony:
         
         final_losses['logit_loss_target'] = logit_loss_target.mean()
         metrics = {'loss': total_loss, **final_losses}
-
         ## log visuals
         if logger is not None:
             b0 = max(min(batch_size, 16//num_frames), 1)
@@ -560,18 +580,18 @@ class MagicPony:
             
             rot_frames = self.render_rotation_frames('geo_normal', prior_shape, texture, light, (h, w), im_features=im_features, num_frames=15, b=1)
             log_video('prior_normal_rotation', rot_frames)
-
         if save_results:
             b0 = self.cfgs.get('num_to_save_from_each_batch', batch_size*num_frames)
             fnames = [f'{tid:07d}/{total_iter:07d}_{fid:10d}' for fid, tid in zip(collapseBF(global_frame_id.int()), collapseBF(global_traj_id.int()))][:b0]
             def save_image(name, image):
                 misc.save_images(save_dir, collapseBF(image)[:b0].clamp(0,1).detach().cpu().numpy(), suffix=name, fnames=fnames)
-
             save_image('image_gt', image_gt)
             save_image('image_pred', image_pred)
             save_image('mask_gt', mask_gt.unsqueeze(2).repeat(1,1,3,1,1))
             save_image('mask_pred', mask_pred.unsqueeze(2).repeat(1,1,3,1,1))
-
+            if depth_pred is not None:
+                save_image('depth_gt', depth_gt.unsqueeze(2).repeat(1,1,3,1,1))
+                save_image('depth_pred', depth_pred.unsqueeze(2).repeat(1,1,3,1,1))
             if self.render_flow and flow_gt is not None:
                 flow_gt_viz = torch.cat([flow_gt, torch.zeros_like(flow_gt[:,:,:1])], 2) + 0.5  # -0.5~1.5
                 flow_gt_viz = flow_gt_viz.view(-1, *flow_gt_viz.shape[2:])
@@ -580,7 +600,6 @@ class MagicPony:
                 flow_pred_viz = torch.cat([flow_pred, torch.zeros_like(flow_pred[:,:,:1])], 2) + 0.5  # -0.5~1.5
                 flow_pred_viz = flow_pred_viz.view(-1, *flow_pred_viz.shape[2:])
                 save_image('flow_pred', flow_pred_viz)
-            
             tmp_shape = shape.first_n(b0).clone()
             tmp_shape.material = texture
             feat = im_features[:b0] if im_features is not None else None

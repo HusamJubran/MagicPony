@@ -54,6 +54,7 @@ class Trainer:
 
     def load_checkpoint(self, load_optim=True):
         """Search the specified/latest checkpoint in checkpoint_dir and load the model and optimizer."""
+        torch.cuda.empty_cache()
         if self.checkpoint_name is not None:
             checkpoint_path = osp.join(self.checkpoint_dir, self.checkpoint_name)
         else:
@@ -70,6 +71,7 @@ class Trainer:
         self.metrics_trace = cp.get('metrics_trace', self.metrics_trace)
         epoch = cp.get('epoch', 999)
         total_iter = cp.get('total_iter', 999999)
+        torch.cuda.empty_cache()
         return epoch, total_iter
 
     def save_checkpoint(self, epoch, total_iter=0, save_optim=True):
@@ -161,7 +163,6 @@ class Trainer:
             total_im_num = num_seqs*num_frames
             metrics.update(m, total_im_num)
             print(f"T{epoch:04}/{iteration:05}/{metrics}")
-
             if self.use_logger:
                 if self.total_iter % self.log_loss_freq == 0:
                     for name, loss in m.items():

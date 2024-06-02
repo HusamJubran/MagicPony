@@ -139,3 +139,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 /.idea
+
+
+
+debugging/
+
+jobs/
+job_output/
+debugging.ipynb
